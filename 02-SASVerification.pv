@@ -1,0 +1,600 @@
+(* open channel for data communication between Alice, Alice's HS, and Bob, Bob's HS *)
+free ch_c2s: channel.
+free ch_s2s: channel.
+free ch_s2c: channel.
+(* SAS out-of-bound (oob) public key channel *)
+free oob_sas_ch: channel [private].
+
+free userID_A: bitstring.
+free deviceID_A: bitstring.
+free userID_B: bitstring.
+free deviceID_B: bitstring.
+free deviceKeyId_A: bitstring.
+free deviceKeyId_B: bitstring.
+
+(* type definition *)
+type pkey.     (* public key *)
+type skey.     (* private key *)
+type fkey.     (* fingerprint key *)
+fun pk(skey): pkey.
+fun fk(skey): fkey.
+type key.
+type methods.  (* m.sas.v1, m.qr_code.show.v1, m.reciprocate.v1 *)
+type msgtype.  (* m.key.verification.XX *)
+type hash.
+type event_action. (* e.g., m.key.verification.start *)
+type key_agreement_protocols.  (* curve25519-hkdf-sha256 *)
+type hashes.  (* sha256 *)
+type message_authentication_codes.  (* hkdf-hmac-sha256 *)
+type short_authentication_string.   (* emoji, decimal *)
+type canonicalJson.
+type G.
+type scalar.
+
+(*
+free skey_A_E:skey [private]. 
+free skey_B_E:skey [private].
+*)
+const SAS_V1: methods.
+const MATRIX_KEY_VERIFICATION_SAS: bitstring.  (* 'MATRIX_KEY_VERIFICATION_SAS|' *)
+const MATRIX_KEY_VERIFICATION_MAC: bitstring.
+const emoji: short_authentication_string.
+const KEY_IDS: bitstring.
+
+(* type conversion functions *)
+fun public_key2bitstring(pkey): bitstring [typeConverter].
+fun canonicalJson2bitstring(canonicalJson): bitstring [typeConverter].
+fun methods2canonicalJson(methods): canonicalJson [typeConverter].
+
+fun private_key2scalar(skey): scalar [typeConverter].
+fun public_key2G(pkey): G [typeConverter].
+fun G2key(G): key [typeConverter].
+
+fun fkey2key(fkey): key [typeConverter].
+fun key2fkey(key): fkey [typeConverter].
+
+(* msgtypes *)
+free Request: event_action.
+free Ready: event_action.
+free Start: event_action.
+free Accept: event_action.
+free Key: event_action.
+free MAC: event_action.
+free Done: event_action.
+free Cancel: event_action.
+
+type vertical.
+free v: vertical.
+
+fun HKDF(bitstring, key, bitstring, nat): bitstring.
+fun HMAC_SHA256(key, bitstring): key.
+fun SHA256(bitstring): hash.
+
+(* Digital signatures *)
+type sskey.
+type spkey. 
+
+fun spk(sskey): spkey.
+fun sign(bitstring, sskey): bitstring.
+
+reduc forall m: bitstring, ssk: sskey; getmess(sign(m, ssk)) = m.
+reduc forall m: bitstring, ssk: sskey; checksign(sign(m, ssk), spk(ssk)) = m.
+
+(* Elliptic Curve Diffie–Hellman Key Exchange. https://cryptobook.nakov.com/asymmetric-key-ciphers/ecdh-key-exchange *)
+const P:G [data].
+fun sca(scalar, G):G.
+equation forall x:scalar, y:scalar; 
+	sca(x, sca(y, P))= sca(y, sca(x, P)).
+
+free sharedsecret_A: key [private].
+free sharedsecret_B: key [private].
+(* sharedkey calculation *)
+letfun get_ecdhkey(sk_E_local:skey, pk_E_remote:pkey) = sca(private_key2scalar(sk_E_local), public_key2G(pk_E_remote)).
+
+(* Concatenation helper functions *)
+fun concat2(bitstring, bitstring): bitstring [data].
+fun concat3(bitstring, vertical, bitstring, vertical, bitstring, vertical): bitstring [data].
+fun concat4(bitstring, bitstring, bitstring, bitstring): bitstring [data].
+fun concat5(methods, key_agreement_protocols, hashes, message_authentication_codes, short_authentication_string): canonicalJson [data].
+fun first_part5(canonicalJson): canonicalJson.
+equation forall b1: methods, b2: key_agreement_protocols, b3: hashes, b4: message_authentication_codes, b5: short_authentication_string; first_part5(concat5(b1, b2, b3, b4, b5)) = methods2canonicalJson(b1).
+
+fun baseInfoConcat(bitstring, bitstring, bitstring, bitstring, bitstring, bitstring): bitstring [data].
+
+letfun get_canonicalJson(b1: methods, b2: key_agreement_protocols, b3: hashes, b4: message_authentication_codes, b5: short_authentication_string) = first_part5(concat5(b1, b2, b3, b4, b5)).
+
+fun generate_bytes(key, short_authentication_string, bitstring): bitstring.
+(* Helper functions to get bits from a bitstring *)
+fun fist5bytes(bitstring): bitstring.
+
+free bytes_6_A: bitstring [private].
+free bytes_6_B: bitstring [private].
+
+(* Keys exchange events *)
+event evClientAliceSendKeys(pkey).
+event evClientAliceSendSAS(bitstring).
+event evClientAliceSendMAC(key).
+event evClientAliceSendFingerprintKey(fkey).
+event evClientAliceReceiveKeys(pkey).
+event evClientAliceReceiveSAS(bitstring).
+event evClientAliceReceiveMAC(key).
+event evClientAliceReceiveFingerprintKey(fkey).
+event evClientAliceActionDone(event_action).
+event evClientAliceCalcShareSecret(key).
+event evClientAliceCalcSAS(bitstring).
+event evClientAliceGetSASInfo(bitstring).
+
+event evClientBobSendKeys(pkey).
+event evClientBobSendSAS(bitstring).
+event evClientBobSendMAC(key).
+event evClientBobSendFingerprintKey(fkey).
+event evClientBobReceiveKeys(pkey).
+event evClientBobReceiveSAS(bitstring).
+event evClientBobReceiveMAC(key).
+event evClientBobReceiveFingerprintKey(fkey).
+event evClientBobActionDone(event_action).
+event evClientBobCalcShareSecret(key).
+event evClientBobCalcSAS(bitstring).
+event evClientBobGetSASInfo(bitstring).
+
+event evCancel.
+
+let clientA(skey_A_E:skey, transactionId:bitstring) = 
+(
+	(* Alice send m.key.verification.request *)
+	let methodA = SAS_V1 in
+	let actionRequest = Request in	
+	out(ch_c2s, (actionRequest, methodA));
+	
+	(* Alice receive m.key.verification.ready from Bob *)
+	in(ch_s2c, (actionReady: event_action, methodB: methods));
+	
+	if actionReady = Ready && methodB = methodA then
+		new KGP_A: key_agreement_protocols;
+		new hash_method_A: hashes;
+		new mac_method_A: message_authentication_codes;
+		new sas_method_A: short_authentication_string;
+		
+		(* Alice send m.key.verification.start *)
+		let actionStart = Start in	
+		out(ch_c2s, (actionStart, methodA, KGP_A, hash_method_A, mac_method_A, sas_method_A));
+		
+		(* Alice receive m.key.verification.accept from Bob *)
+		in(ch_s2c, (actionAccept: event_action, 
+				methodB: methods, 
+				KGP_B: key_agreement_protocols, 
+				hash_method_B: hashes, 
+				mac_method_B: message_authentication_codes, 
+				sas_method_B: short_authentication_string, 
+				commitmentB: hash)
+		);
+		
+		if actionAccept = Accept && KGP_B = KGP_A && mac_method_B = mac_method_A && sas_method_B = sas_method_A then
+			let commitmentB_saved = commitmentB in
+			
+			(* Alice send m.key.verification.key to Bob *)
+			let pkey_A_E = pk(skey_A_E) in
+			let fkey_A_E = fk(skey_A_E) in  (* Here we simply use fingerprintkey instead *)
+			let actionKey = Key in
+			event evClientAliceSendKeys(pkey_A_E);
+			out(ch_c2s, (actionKey, pkey_A_E));
+			
+			(* Alice receive m.key.verification.key from Bob *)
+			in(ch_s2c, (actionKey: event_action, pkey_B_E: pkey));
+			event evClientAliceReceiveKeys(pkey_B_E);
+			(* commitment verification *)
+			let cJson = get_canonicalJson(methodB, KGP_B, hash_method_B, mac_method_B, sas_method_B) in
+			let calc_commitmentB = SHA256(concat2(public_key2bitstring(pkey_B_E), canonicalJson2bitstring(cJson))) in
+			if calc_commitmentB = commitmentB_saved then
+				(* calculate ECDH *)
+				let sharedsecret_A = G2key(get_ecdhkey(skey_A_E, pkey_B_E)) in
+				event evClientAliceCalcShareSecret(sharedsecret_A);
+				(* SAS info *)
+				let ourInfo = concat3(userID_A, v, deviceID_A, v, public_key2bitstring(pkey_A_E), v) in   (* e.g., "XX|XX|XX" *)
+				let theirInfo = concat3(userID_B, v, deviceID_B, v, public_key2bitstring(pkey_B_E), v) in
+				let txnId = transactionId in
+				let sasInfo = concat4(MATRIX_KEY_VERIFICATION_SAS, ourInfo, theirInfo, txnId) in 
+				event evClientAliceGetSASInfo(sasInfo);
+				
+				(* calculate SAS *)
+				let bytes_6_A = generate_bytes(sharedsecret_A, sas_method_A, sasInfo) in
+				event evClientAliceCalcSAS(bytes_6_A);
+				if sas_method_A = emoji then
+					let emojis_A = bytes_6_A in
+					
+					event evClientAliceSendSAS(emojis_A);
+					out(oob_sas_ch, emojis_A);  (* out-of-bound channel *)
+					
+					in(oob_sas_ch, emojis_B:bitstring);  (* out-of-bound channel *)
+					event evClientAliceReceiveSAS(emojis_B);
+					
+					(* 对比SAS-emojis *)
+					if emojis_A = emojis_B then
+						(* Alice send m.key.verification.mac *)
+						let baseInfo = baseInfoConcat(MATRIX_KEY_VERIFICATION_MAC, userID_A, deviceID_A, userID_B, deviceID_B, transactionId) in
+						let info = concat2(baseInfo, deviceKeyId_A) in
+						let calculateMac_A = HMAC_SHA256(fkey2key(fkey_A_E), info) in 
+						let actionMAC = MAC in
+						
+						event evClientAliceSendMAC(calculateMac_A);
+						let payload_fkey_A_E = fkey2key(fkey_A_E) in
+						event evClientAliceSendFingerprintKey(fkey_A_E);
+						out(ch_c2s, (actionMAC, payload_fkey_A_E, calculateMac_A));
+						
+						(* Alice receive m.key.verification.mac *)
+						in(ch_s2c, (actionMAC:event_action, payload_fkey_B_E:key, calculateMac_B:key));
+						event evClientAliceReceiveMAC(calculateMac_B);
+						event evClientAliceReceiveFingerprintKey(key2fkey(payload_fkey_B_E));
+						
+						if actionMAC = MAC then
+							let baseInfo = baseInfoConcat(MATRIX_KEY_VERIFICATION_MAC, userID_B, deviceID_B, userID_A, deviceID_A, transactionId) in
+							let info = concat2(baseInfo, KEY_IDS) in
+							if payload_fkey_B_E = HMAC_SHA256(calculateMac_B, info) then
+								(* Alice send m.key.verification.done *)
+								let actionDone = Done in 
+								event evClientAliceActionDone(actionDone);
+								out(ch_c2s, actionDone)
+							else
+								event evCancel
+						else
+							event evCancel
+					else
+						event evCancel					
+				else 
+					let numbers_A = fist5bytes(bytes_6_A) in 
+					event evClientAliceSendSAS(numbers_A);
+					out(oob_sas_ch, numbers_A);  (* out-of-bound channel *)
+					
+					in(oob_sas_ch, numbers_B:bitstring);  (* out-of-bound channel *)
+					event evClientAliceReceiveSAS(numbers_B);
+					(* 对比SAS-number *)
+					if numbers_A = numbers_B then
+						let baseInfo = baseInfoConcat(MATRIX_KEY_VERIFICATION_MAC, userID_A, deviceID_A, userID_B, deviceID_B, transactionId) in
+						let info = concat2(baseInfo, deviceKeyId_A) in
+						let fkey_A_E = fk(skey_A_E) in  (* fingerprintKey *)
+						let calculateMac_A = HMAC_SHA256(fkey2key(fkey_A_E), info) in 
+						let actionMAC = MAC in
+						event evClientAliceSendMAC(calculateMac_A);
+						let payload_fkey_A_E = fkey2key(fkey_A_E) in
+						event evClientAliceSendFingerprintKey(fkey_A_E);
+						out(ch_c2s, (actionMAC, payload_fkey_A_E, calculateMac_A));
+						
+						(* Alice receive m.key.verification.mac *)
+						in(ch_s2c, (actionMAC:event_action, payload_fkey_B_E:key, calculateMac_B:key));
+						event evClientAliceReceiveMAC(calculateMac_B);
+						event evClientAliceReceiveFingerprintKey(key2fkey(payload_fkey_B_E));	
+						if actionMAC = MAC then
+							let baseInfo = baseInfoConcat(MATRIX_KEY_VERIFICATION_MAC, userID_B, deviceID_B, userID_A, deviceID_A, transactionId) in
+							let info = concat2(baseInfo, KEY_IDS) in
+							if payload_fkey_B_E = HMAC_SHA256(calculateMac_B, info) then
+								(* Alice send m.key.verification.done *)
+								let actionDone = Done in 
+								out(ch_c2s, actionDone)
+							else
+								event evCancel
+						else
+							event evCancel
+					else
+						event evCancel
+			else
+				event evCancel
+		else
+			event evCancel
+	else
+		event evCancel
+).
+
+
+let serverA() = 
+(
+	(* Alice send m.key.verification.request *)
+	in(ch_c2s, (actionRequest:event_action, methodA:methods));
+	out(ch_s2s, (actionRequest, methodA));
+	
+	(* Bob send m.key.verification.ready *)
+	in(ch_s2s, (actionReady: event_action, methodB: methods));
+	out(ch_s2c, (actionReady, methodB));
+	
+	(* Alice send m.key.verification.start *)
+	in(ch_c2s, (actionStart:event_action, method:methods, KGP_A:key_agreement_protocols, 
+			hash_method_A:hashes, mac_method_A:message_authentication_codes, sas_method_A:short_authentication_string));
+	out(ch_s2s, (actionStart, method, KGP_A, hash_method_A, mac_method_A, sas_method_A));
+	
+	(* Bob send m.key.verification.accept *)
+	in(ch_s2s, (actionAccept: event_action, 
+			method: methods, 
+			KGP_B: key_agreement_protocols, 
+			hash_method_B: hashes, 
+			mac_method_B: message_authentication_codes, 
+			sas_method_B: short_authentication_string, 
+			commitmentB: hash)
+		);
+	out(ch_s2c, (actionAccept, method, KGP_B, hash_method_B, mac_method_B, sas_method_B, commitmentB));
+	
+	(* Alice send m.key.verification.key *)
+	in(ch_c2s, (actionKey: event_action, pkey_A_E: pkey));
+	out(ch_s2s, (actionKey, pkey_A_E));
+	
+	(* Bob send m.key.verification.key *)
+	in(ch_s2s, (actionKey: event_action, pkey_B_E: pkey));
+	out(ch_s2c, (actionKey, pkey_B_E));
+	
+	(* Alice send m.key.verification.mac *)
+	in(ch_c2s, (actionMAC:event_action, fkey_A_E:key, calculateMac_A:key));
+	out(ch_s2s, (actionMAC, fkey_A_E, calculateMac_A));
+	
+	(* Bob send m.key.verification.mac *)
+	in(ch_s2s, (actionMAC:event_action, payload_fkey_B_E:key, calculateMac_B:key));
+	out(ch_s2c, (actionMAC, payload_fkey_B_E, calculateMac_B));
+	
+	(* Alice send m.key.verification.done *)
+	in(ch_c2s, actionDone:event_action);
+	out(ch_s2s, actionDone);
+	
+	(* Bob send m.key.verification.done *)
+	in(ch_s2s, actionDone:event_action);
+	out(ch_s2c, actionDone)
+).
+
+
+let serverB() = 
+(
+
+	(* Alice send m.key.verification.request *)
+	in(ch_s2s, (actionRequest:event_action, methodA:methods));
+	out(ch_s2c, (actionRequest, methodA));
+	
+	(* Bob send m.key.verification.ready *)
+	in(ch_c2s, (actionReady: event_action, methodB: methods));
+	out(ch_s2s, (actionReady, methodB));
+	
+	(* Alice send m.key.verification.start *)
+	in(ch_s2s, (actionStart:event_action, method:methods, KGP_A:key_agreement_protocols, 
+			hash_method_A:hashes, mac_method_A:message_authentication_codes, sas_method_A:short_authentication_string));
+	out(ch_s2c, (actionStart, method, KGP_A, hash_method_A, mac_method_A, sas_method_A));
+	
+	(* Bob send m.key.verification.accept *)
+	in(ch_c2s, (actionAccept: event_action, 
+			method: methods, 
+			KGP_B: key_agreement_protocols, 
+			hash_method_B: hashes, 
+			mac_method_B: message_authentication_codes, 
+			sas_method_B: short_authentication_string, 
+			commitmentB: hash)
+		);
+	out(ch_s2s, (actionAccept, method, KGP_B, hash_method_B, mac_method_B, sas_method_B, commitmentB));
+	
+	(* Alice send m.key.verification.key *)
+	in(ch_s2s, (actionKey: event_action, pkey_A_E: pkey));
+	out(ch_s2c, (actionKey, pkey_A_E));
+	
+	(* Bob send m.key.verification.key *)
+	in(ch_c2s, (actionKey: event_action, pkey_B_E: pkey));
+	out(ch_s2s, (actionKey, pkey_B_E));
+	
+	(* Bob send m.key.verification.mac *)
+	in(ch_c2s, (actionMAC:event_action, payload_fkey_B_E:key, calculateMac_B:key));
+	out(ch_s2s, (actionMAC, payload_fkey_B_E, calculateMac_B));
+	
+	(* Alice send m.key.verification.mac *)
+	in(ch_s2s, (actionMAC:event_action, payload_fkey_A_E:key, calculateMac_A:key));
+	out(ch_s2c, (actionMAC, payload_fkey_A_E, calculateMac_A));
+	
+	(* Alice send m.key.verification.done *)
+	in(ch_s2s, actionDone:event_action);
+	out(ch_s2c, actionDone);
+	
+	(* Bob send m.key.verification.done *)
+	in(ch_c2s, actionDone:event_action);
+	out(ch_s2s, actionDone)
+).
+
+
+let clientB(skey_B_E:skey, transactionId: bitstring) = 
+(	
+	(* Bob receive m.key.verification.request with method *)
+	in(ch_s2c, (actionRequest: event_action, methodA: methods));
+	
+	let methodB = SAS_V1 in
+	if actionRequest = Request && methodA = methodB then
+		(* Bob send m.key.verification.ready with method *)
+		let actionReady = Ready in
+		out(ch_c2s, (actionReady, methodB));
+		
+		(* Bob receive m.key.verification.start with infos *)
+		in(ch_s2c, (actionStart: event_action, methodA: methods, KGP_A: key_agreement_protocols, hash_method_A: hashes, 
+					mac_method_A: message_authentication_codes, sas_method_A: short_authentication_string));
+				
+		(* Bob send m.key.verification.accept with other infos *)
+		if actionStart = Start then
+			let pkey_B_E = pk(skey_B_E) in
+			let fkey_B_E = fk(skey_B_E) in   (* fingerprintKey *)
+
+			new KGP_B: key_agreement_protocols;
+			new hash_method_B: hashes;
+			new mac_method_B: message_authentication_codes;
+			new sas_method_B: short_authentication_string;
+			new deviceID_B: bitstring;
+			
+			if KGP_A = KGP_B && hash_method_A = hash_method_B && mac_method_A = mac_method_B && sas_method_A = sas_method_B then
+				let actionAccept = Accept in
+				(* compute commitment *)
+				let cJson = get_canonicalJson(methodB, KGP_B, hash_method_B, mac_method_B, sas_method_B) in
+				let commitmentB = SHA256(concat2(public_key2bitstring(pkey_B_E), canonicalJson2bitstring(cJson))) in
+				
+				(* Bob send m.key.verification.accept to Alice *)
+				out(ch_c2s, (actionAccept, methodB, KGP_B, hash_method_B, mac_method_B, sas_method_B, commitmentB));
+				
+				(* Bob receive m.key.verification.key from Alice *)
+				in(ch_s2c, (actionKey: event_action, pkey_A_E: pkey));
+				event evClientBobReceiveKeys(pkey_A_E);
+				if actionKey = Key then 
+					let actionKey = Key in
+					(* Bob send m.key.verification.key to Alice *)
+					event evClientBobSendKeys(pkey_B_E);
+					out(ch_c2s, (actionKey, pkey_B_E));
+										
+					(* calculate ECDH *)
+					let sharedsecret_B = G2key(get_ecdhkey(skey_B_E, pkey_A_E)) in
+					event evClientBobCalcShareSecret(sharedsecret_B);
+					(* SAS info *)
+					let ourInfo = concat3(userID_B, v, deviceID_B, v, public_key2bitstring(pkey_B_E), v) in
+					let theirInfo = concat3(userID_A, v, deviceID_A, v, public_key2bitstring(pkey_A_E), v) in
+					let txnId = transactionId in
+					let sasInfo = concat4(MATRIX_KEY_VERIFICATION_SAS, ourInfo, theirInfo, txnId) in 
+					event evClientBobGetSASInfo(sasInfo);
+					
+					(* calculate SAS *)
+					let bytes_6_B = generate_bytes(sharedsecret_B, sas_method_B, sasInfo) in 
+					event evClientBobCalcSAS(bytes_6_B);
+					if sas_method_B = emoji then
+						let emojis_B = bytes_6_B in
+						
+						in(oob_sas_ch, emojis_A:bitstring);  (* out-of-bound channel *)
+						event evClientBobReceiveSAS(emojis_A);
+						event evClientBobSendSAS(emojis_B);
+						out(oob_sas_ch, emojis_B);  		 (* out-of-bound channel *)
+						
+						(* 对比SAS-emojis *)
+						if emojis_A = emojis_B then
+							(* Bob send m.key.verification.mac to Alice *)
+							let baseInfo = baseInfoConcat(MATRIX_KEY_VERIFICATION_MAC, userID_B, deviceID_B, userID_A, deviceID_A, transactionId) in
+							let info = concat2(baseInfo, deviceKeyId_B) in
+							let calculateMac_B = HMAC_SHA256(fkey2key(fkey_B_E), info) in 
+
+							(* Bob send m.key.verification.mac to Alice *)							
+							let actionMAC = MAC in
+							event evClientBobSendMAC(calculateMac_B);
+							let payload_fkey_B_E = fkey2key(fkey_B_E) in
+							event evClientBobSendFingerprintKey(fkey_B_E);
+							out(ch_c2s, (actionMAC, payload_fkey_B_E, calculateMac_B));
+													
+							(* Bob receive m.key.verification.mac from Alice *)
+							in(ch_s2c, (actionMAC:event_action, payload_fkey_A_E:key, calculateMac_A:key));
+							event evClientBobReceiveMAC(calculateMac_A);
+							event evClientBobReceiveFingerprintKey(key2fkey(payload_fkey_A_E));
+							
+							if actionMAC = MAC then
+								let baseInfo = baseInfoConcat(MATRIX_KEY_VERIFICATION_MAC, userID_A, deviceID_A, userID_B, deviceID_B, transactionId) in
+								let info = concat2(baseInfo, KEY_IDS) in
+								if payload_fkey_A_E = HMAC_SHA256(calculateMac_A, info) then
+									(* Alice send m.key.verification.done *)
+									let actionDone = Done in
+									event evClientBobActionDone(actionDone);
+									out(ch_c2s, actionDone)
+								else
+									event evCancel
+							else
+								event evCancel
+						else
+							event evCancel
+					else 
+						let numbers_B = fist5bytes(bytes_6_B) in 
+						in(oob_sas_ch, numbers_A:bitstring);  (* out-of-bound channel *)
+						event evClientBobReceiveSAS(numbers_A);
+						event evClientBobSendSAS(numbers_B);
+						out(oob_sas_ch, numbers_B);			  (* out-of-bound channel *)
+						
+						(* 对比SAS-number *)
+						if numbers_A = numbers_B then
+							(* Bob send m.key.verification.mac to Alice *)
+							let baseInfo = baseInfoConcat(MATRIX_KEY_VERIFICATION_MAC, userID_B, deviceID_B, userID_A, deviceID_A, transactionId) in
+							let info = concat2(baseInfo, deviceKeyId_B) in
+							let fkey_B_E = fk(skey_B_E) in    (* fingerprintKey *)
+							let calculateMac_B = HMAC_SHA256(fkey2key(fkey_B_E), info) in 
+							
+							(* Bob send m.key.verification.mac to Alice *)		
+							let actionMAC = MAC in
+							event evClientBobSendMAC(calculateMac_B);
+							let payload_fkey_B_E = fkey2key(fkey_B_E) in
+							event evClientBobSendFingerprintKey(fkey_B_E);
+							out(ch_c2s, (actionMAC, payload_fkey_B_E, calculateMac_B));
+							
+							(* Bob receive m.key.verification.mac from Alice *)
+							in(ch_s2c, (A_actionMAC:event_action, payload_fkey_A_E:key, calculateMac_A:key));
+							event evClientBobReceiveMAC(calculateMac_A);
+							event evClientBobReceiveFingerprintKey(key2fkey(payload_fkey_A_E));
+							
+							if A_actionMAC = MAC then
+								let baseInfo = baseInfoConcat(MATRIX_KEY_VERIFICATION_MAC, userID_A, deviceID_A, userID_B, deviceID_B, transactionId) in
+								let info = concat2(baseInfo, KEY_IDS) in
+								if payload_fkey_A_E = HMAC_SHA256(calculateMac_A, info) then
+									(* Alice send m.key.verification.done *)
+									let actionDone = Done in 
+									event evClientBobActionDone(actionDone);
+									out(ch_c2s, actionDone)
+								else
+									event evCancel
+							else
+								event evCancel
+						else
+							event evCancel
+				else 
+					event evCancel
+			else
+				event evCancel
+		else
+			event evCancel
+	else
+		event evCancel
+).
+
+(* authenticity properties *)
+query pkey_E:pkey; event(evClientBobReceiveKeys(pkey_E)) ==> event(evClientAliceSendKeys(pkey_E)).
+query pkey_E:pkey; event(evClientAliceReceiveKeys(pkey_E)) ==> event(evClientBobSendKeys(pkey_E)).
+
+query sas:bitstring; event(evClientBobReceiveSAS(sas)) ==> event(evClientAliceSendSAS(sas)).
+query sas:bitstring; event(evClientAliceReceiveSAS(sas)) ==> event(evClientBobSendSAS(sas)).
+
+query mac:key; event(evClientBobReceiveMAC(mac)) ==> event(evClientAliceSendMAC(mac)).
+query mac:key; event(evClientAliceReceiveMAC(mac)) ==> event(evClientBobSendMAC(mac)).
+
+query fkey_E:fkey; event(evClientBobReceiveFingerprintKey(fkey_E)) ==> event(evClientAliceSendFingerprintKey(fkey_E)).
+query fkey_E:fkey; event(evClientAliceReceiveFingerprintKey(fkey_E)) ==> event(evClientBobSendFingerprintKey(fkey_E)).
+
+query pkey_E:pkey, sharekey:key; event(evClientBobCalcShareSecret(sharekey)) ==> event(evClientAliceSendKeys(pkey_E)).
+query pkey_E:pkey, sharekey:key; event(evClientAliceCalcShareSecret(sharekey)) ==> event(evClientBobSendKeys(pkey_E)).
+
+query pkey_E:pkey, sas:bitstring; event(evClientBobCalcSAS(sas)) ==> event(evClientAliceSendKeys(pkey_E)).
+query pkey_E:pkey, sas:bitstring; event(evClientAliceCalcSAS(sas)) ==> event(evClientBobSendKeys(pkey_E)).
+
+query pkey_E:pkey, actionDone:event_action; event(evClientAliceActionDone(actionDone)) ==> event(evClientBobSendKeys(pkey_E)).
+query pkey_E:pkey, actionDone:event_action; event(evClientBobActionDone(actionDone)) ==> event(evClientAliceSendKeys(pkey_E)).
+
+query sas:bitstring, actionDone:event_action; event(evClientAliceActionDone(actionDone)) ==> event(evClientBobSendSAS(sas)).
+query sas:bitstring, actionDone:event_action; event(evClientBobActionDone(actionDone)) ==> event(evClientAliceSendSAS(sas)).
+
+(* confidentiality properties *)
+query attacker(sharedsecret_A).
+query attacker(sharedsecret_B).
+query attacker(bytes_6_A).  (* SAS info *)
+query attacker(bytes_6_B).  (* SAS info *)
+query attacker(Cancel).
+
+(* Attacker can control pkeys. True means attack success. *)
+query attacker(sharedsecret_A) ==> attacker(bytes_6_B) || attacker(bytes_6_A).  (* True means attack success. *)
+
+query skey_A_E:skey, skey_B_E:skey;
+let pkey_B_E = pk(skey_B_E) in 
+let pkey_A_E = pk(skey_A_E) in 
+attacker(pkey_A_E) && attacker(pkey_B_E) ==> event(evClientBobCalcShareSecret(sharedsecret_B)) || event(evClientAliceCalcShareSecret(sharedsecret_A)).
+
+query skey_A_E:skey, skey_B_E:skey;
+let pkey_B_E = pk(skey_B_E) in 
+let pkey_A_E = pk(skey_A_E) in 
+attacker(pkey_A_E) && attacker(pkey_B_E) ==> attacker(sharedsecret_A) || attacker(sharedsecret_B).
+
+query skey_A_E:skey, skey_B_E:skey;
+let pkey_B_E = pk(skey_B_E) in 
+let pkey_A_E = pk(skey_A_E) in 
+attacker(pkey_A_E) && attacker(pkey_B_E) ==> attacker(bytes_6_A) || attacker(bytes_6_B).
+
+process
+	
+	new skey_A_E:skey;
+	new skey_B_E:skey;
+	new transactionId: bitstring;
+
+( 
+  !clientA(skey_A_E, transactionId) | !serverA() | !serverB() | !clientB(skey_B_E, transactionId)
+)

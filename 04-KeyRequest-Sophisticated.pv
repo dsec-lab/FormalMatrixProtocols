@@ -1,0 +1,377 @@
+(* 
+	clone attack model in Key Request
+0. same device_id, same access_token, same identity key. SAS verified.
+
+1. can_create_new_session
+	do: different session_id in one room, and others in a room also believe its a good device, so also can_key_exchange
+	can: break PCS property of DR of Matrix Olm
+	
+2. can_request_session_key
+	do: send m.room_key_request action to other device directly, receive m.forwarded_room_key
+	can: break PFS property of DR of Matrix Olm
+	
+3. can_receive_encrypted_message
+	do: just receive message
+4. can_decrypt_message
+	can: break PCS and PFS
+	
+5. can_encrypt_message
+	do: use session key and encrypt message
+6. can_send_encrypted_message
+	can: break authenticity property
+
+过程思路：
+0. Alice和Bob已建立了session
+1. Alice的信息（keys、deviceID、userID等，但没有password信息）插入表中，作为clone信息
+2. Alice Cloner打开Element客户端
+3. 如果Alice Cloner无法解密先前消息，则发送m.room_key_request的request给Alice，Alice发送m.forwarded_room_key
+4. Alice Cloner与Bob新建session
+5. Bob发送加密消息给Alice Server，Alice's server同步数据给Alice和Alice Cloner
+6. Alice解密消息，Alice Cloner也解密消息
+7. Alice加密消息发送给Bob，Alice Cloner也可以解密
+8. Alice Cloner可以发送加密消息给Bob
+
+*)
+free ch_c2s: channel.
+free ch_s2s: channel.
+free ch_s2c: channel.
+free ch_clone2s: channel.  (* channel between server and cloner *)
+free ch_s2clone: channel.  (* channel between server and cloner *)
+
+type key.
+type skey.
+type pkey.
+fun pk(skey): pkey.
+type action.
+type tp_sessionKey.
+type tp_sharedKey.
+type iv.
+type verification.
+type token.
+
+const Request: action.
+const Forwarded_Key: action.
+const INFOS: bitstring.
+const SALT: bitstring.
+const INFO: bitstring.
+
+free RoomKeyRequest: action.
+free RoomForwaredKey: action.
+
+free sessionKey_AB: tp_sessionKey [private].
+
+(* yes/no verification of sas code comparison *)
+free yes_verification: verification.
+free no_verification: verification.
+
+(* insert clientA's infos to table, and simulate cloning attack process. *)
+table table_clientA_cloner(bitstring, bitstring, token, skey, skey, bitstring, bitstring).
+
+(*
+events:
+1. Cloner能否同步收到A-B的信息
+2. Cloner能否解密先前信息
+3. Cloner能否与B建立Session
+4. Cloner能否解密之后的信息
+5. Cloner能否加密并发送信息给B
+
+*)
+event evCloneTable(bitstring, bitstring, token, skey, skey).
+event evClonerGetRoomForwardedKey(tp_sessionKey).
+event evClonerCanDecryptFormerMessage(bitstring).
+event evClonerCanDecryptBobMessage(bitstring).
+event evClonerCanEncryptMessage(bitstring).
+event evClonerSendMessage(bitstring).
+event evClonerReceiveMessage(bitstring).
+event evClonerCanBuildSessionWithBob(tp_sessionKey).
+
+event evClientBobBuildSessionWithCloner(tp_sharedKey).
+event evClientBobReceiveClonerMessage(bitstring).
+
+
+fun get_ecdh3_between_AB(skey, skey, pkey, pkey): tp_sharedKey.
+fun get_session_key_between_AB(tp_sharedKey, bitstring): tp_sessionKey.  (* here we simply define sessionkey *)
+fun get_aes_key_between_AB(bitstring, tp_sessionKey, bitstring, nat): bitstring.
+
+(* Helper functions to get bits from a bitstring *)
+fun fist256bit(bitstring): key.
+fun next256bit(bitstring): key.
+fun last128bit(bitstring): iv.
+
+(* AES-CBC *)
+fun senccbc(bitstring, key, iv): bitstring.
+reduc forall m:bitstring, k: key, i: iv; sdeccbc(senccbc(m, k, i), k, i) = m.
+
+
+(* Client send sensitive data *)
+free plain_text_A: bitstring [private].
+free plain_text_B: bitstring [private].
+free plain_text_A_clone: bitstring [private].
+
+
+let clientA() = 
+(	
+	new userID_A: bitstring;
+	new deviceID_A: bitstring;
+	
+	new skey_A_I:skey;
+	new skey_A_E:skey; 
+	
+	new access_token_A: token;
+	
+	(* Identity keys and One-time keys *)
+	let pk_A_I = pk(skey_A_I) in
+	let pk_A_E = pk(skey_A_E) in
+	out(ch_c2s, (pk_A_I, pk_A_E));
+	
+	(* Key exchange and encrypt msg *)
+	in(ch_s2c, (pk_B_I: pkey, pk_B_E: pkey));
+	let sharedKey_AB = get_ecdh3_between_AB(skey_A_I, skey_A_E, pk_B_I, pk_B_E) in
+	let sessionKey_AB = get_session_key_between_AB(sharedKey_AB, INFOS) in
+	let aesString = get_aes_key_between_AB(SALT, sessionKey_AB, INFO, 80) in
+	let aesKey = fist256bit(aesString) in
+	let hmacKey: key = next256bit(aesString) in
+	let aesIV = last128bit(aesString) in
+	
+	(* Clone Attack之前的消息 *)
+	let cipher_text_A = senccbc(plain_text_A, aesKey, aesIV) in
+	out(ch_c2s, cipher_text_A);
+	in(ch_s2c, cipher_text_B: bitstring);
+	let plain_text_B = sdeccbc(cipher_text_B, aesKey, aesIV) in
+	
+	(* Cloning point *)
+	insert table_clientA_cloner(userID_A, deviceID_A, access_token_A, skey_A_I, skey_A_E, cipher_text_A, cipher_text_B);
+	
+	in(ch_s2c, (deviceID_A_clone: bitstring, request_action: action));
+	(* let  = is_verified() in *)
+	let forward_action = Forwarded_Key in
+	out(ch_c2s, (forward_action, sessionKey_AB));
+	
+	(* Clone Attack之后的消息 *)
+	let cipher_text_A = senccbc(plain_text_A, aesKey, aesIV) in
+	out(ch_c2s, cipher_text_A);
+	in(ch_s2c, cipher_text_B: bitstring);
+	let plain_text_B = sdeccbc(cipher_text_B, aesKey, aesIV) in
+	
+	(* 接收Cloner发送的消息, 请求sessionkey，实际上是同一RootKey派生的，但为陈述方便，故而此为之 *)
+	in(ch_s2c, cipher_text_A_clone: bitstring);
+	let request_action = RoomKeyRequest in
+	out(ch_c2s, (deviceID_A, request_action));
+	in(ch_s2c, (forward_action: action, sessionKey_AB_clone_new: tp_sessionKey));
+	let aesString_clone_new = get_aes_key_between_AB(SALT, sessionKey_AB_clone_new, INFO, 80) in
+	let aesKey_clone_new = fist256bit(aesString_clone_new) in
+	let hmacKey_clone_new: key = next256bit(aesString_clone_new) in
+	let aesIV_clone_new = last128bit(aesString_clone_new) in
+	let plain_text_A_clone = sdeccbc(cipher_text_A_clone, aesKey_clone_new, aesIV_clone_new) in
+	
+	0
+).
+
+
+(* Cloner主要是静默监听，并不主动发消息 *)
+let clientA_cloner() = 
+(
+	get table_clientA_cloner(userID_A, deviceID_A, access_token_A, skey_A_I, skey_A_E, cipher_text_A, cipher_text_B_old) in
+	event evCloneTable(userID_A, deviceID_A, access_token_A, skey_A_I, skey_A_E);
+	let userID_A_clone = userID_A in
+	let deviceID_A_clone = deviceID_A in
+	let skey_A_I_clone = skey_A_I in
+	
+	(* 发送m.room_key_request至deviceID_A获取session key, 解密 *)
+	let request_action = RoomKeyRequest in
+	let is_verified = yes_verification in
+	out(ch_clone2s, (deviceID_A_clone, request_action));
+	in(ch_s2clone, (forward_action: action, sessionKey_AB: tp_sessionKey));
+	event evClonerGetRoomForwardedKey(sessionKey_AB);
+	
+	let sessionKey_AB_clone = sessionKey_AB in
+	let aesString_clone = get_aes_key_between_AB(SALT, sessionKey_AB_clone, INFO, 80) in
+	let aesKey_clone = fist256bit(aesString_clone) in
+	let hmacKey_clone: key = next256bit(aesString_clone) in
+	let aesIV_clone = last128bit(aesString_clone) in
+	
+	let plain_text_A = sdeccbc(cipher_text_A, aesKey_clone, aesIV_clone) in
+	event evClonerCanDecryptFormerMessage(cipher_text_A);
+	let plain_text_B = sdeccbc(cipher_text_B_old, aesKey_clone, aesIV_clone) in
+
+	
+	(* 接收A-B之间的加密信息，解密 *)
+	in(ch_s2clone, cipher_text_A: bitstring);
+	let plain_text_A = sdeccbc(cipher_text_A, aesKey_clone, aesIV_clone) in
+	in(ch_s2clone, cipher_text_B: bitstring);
+	let plain_text_B = sdeccbc(cipher_text_B, aesKey_clone, aesIV_clone) in
+	event evClonerCanDecryptBobMessage(cipher_text_B);
+	
+	(* 与B建立新的session, 并发消息 *)
+	(* Key exchange and encrypt msg *)
+	(* Identity keys and One-time keys *)
+	let pk_A_I_clone = pk(skey_A_I_clone) in  (* here, pk_A_I_clone = pk_A_I *)
+	new skey_A_E_clone: skey;
+	let pk_A_E_clone = pk(skey_A_E_clone) in
+	out(ch_clone2s, (pk_A_I_clone, pk_A_E_clone));
+	
+	(* Key exchange and encrypt msg *)
+	in(ch_s2clone, (pk_B_I: pkey, pk_B_E: pkey));
+	let sharedKey_AB_clone = get_ecdh3_between_AB(skey_A_I_clone, skey_A_E_clone, pk_B_I, pk_B_E) in
+	let sessionKey_AB_clone_new = get_session_key_between_AB(sharedKey_AB_clone, INFOS) in
+	let aesString_clone_new = get_aes_key_between_AB(SALT, sessionKey_AB_clone_new, INFO, 80) in
+	let aesKey_clone_new = fist256bit(aesString_clone_new) in
+	let hmacKey_clone_new: key = next256bit(aesString_clone_new) in
+	let aesIV_clone_new = last128bit(aesString_clone_new) in
+	event evClonerCanBuildSessionWithBob(sessionKey_AB_clone_new);
+	
+	(* 新的sessionkey解密旧消息 *)
+	let plain_text_B = sdeccbc(cipher_text_B_old, aesKey_clone_new, aesIV_clone_new) in
+	event evClonerCanDecryptFormerMessage(plain_text_B);
+
+	let cipher_text_A_clone = senccbc(plain_text_A_clone, aesKey_clone_new, aesIV_clone_new) in
+	event evClonerCanEncryptMessage(cipher_text_A_clone);
+	out(ch_clone2s, cipher_text_A_clone);
+	event evClonerSendMessage(cipher_text_A_clone);
+	
+	(* 收到A的Request *)
+	in(ch_s2clone, (deviceID_A: bitstring, request_action: action));
+	let forward_action = Forwarded_Key in
+	out(ch_clone2s, (forward_action, sessionKey_AB_clone_new));
+	
+	0
+).
+
+
+let serverA() = 
+(
+	in(ch_c2s, (pk_A_I: pkey, pk_A_E: pkey));
+	out(ch_s2s, (pk_A_I, pk_A_E));
+	
+	in(ch_s2s, (pk_B_I: pkey, pk_B_E: pkey));
+	out(ch_s2c, (pk_B_I, pk_B_E));
+	
+	(* clone attack之前 *)
+	in(ch_c2s, cipher_text_A: bitstring);
+	out(ch_s2s, cipher_text_A);
+	
+	in(ch_s2s, cipher_text_B: bitstring);
+	out(ch_s2c, cipher_text_B);
+	
+	(* clone attack之后*)
+	in(ch_clone2s, (deviceID_A_clone: bitstring, request_action: action));
+	out(ch_s2c, (deviceID_A_clone, request_action));
+	
+	in(ch_c2s, (forward_action: action, sessionKey_AB: tp_sessionKey));
+	out(ch_s2clone, (forward_action, sessionKey_AB));
+	
+	(* A发送消息 *)
+	in(ch_c2s, cipher_text_A: bitstring);
+	out(ch_s2s, cipher_text_A);
+	out(ch_s2clone, cipher_text_A);
+	
+	(* B发送消息 *)
+	in(ch_s2s, cipher_text_B: bitstring);
+	out(ch_s2c, cipher_text_B);
+	out(ch_s2clone, cipher_text_B)
+).
+
+
+let serverB() = 
+(
+	in(ch_s2s, (pk_A_I: pkey, pk_A_E: pkey));
+	out(ch_s2c, (pk_A_I, pk_A_E));
+	
+	in(ch_c2s, (pk_B_I: pkey, pk_B_E: pkey));
+	out(ch_s2s, (pk_B_I, pk_B_E));
+	
+	(* clone attack之前 *)
+	in(ch_s2s, cipher_text_A: bitstring);
+	out(ch_s2c, cipher_text_A);
+	
+	in(ch_c2s, cipher_text_B: bitstring);
+	out(ch_s2s, cipher_text_B);
+	
+	(* A发送消息 *)
+	in(ch_s2s, cipher_text_A: bitstring);
+	out(ch_s2c, cipher_text_A);
+	
+	(* B发送消息 *)
+	in(ch_c2s, cipher_text_B: bitstring);
+	out(ch_s2s, cipher_text_B)
+).
+
+
+let clientB() = 
+(
+	new userID_B: bitstring;
+	new deviceID_B: bitstring;
+	
+	new skey_B_I:skey;
+	new skey_B_E:skey; 
+	
+	(* Identity keys and One-time keys *)
+	let pk_B_I = pk(skey_B_I) in
+	let pk_B_E = pk(skey_B_E) in
+	
+	(* Key exchange and decrypt msg *)
+	in(ch_s2c, (pk_A_I: pkey, pk_A_E: pkey));
+	out(ch_c2s, (pk_B_I, pk_B_E));
+	let sharedKey_BA = get_ecdh3_between_AB(skey_B_I, skey_B_E, pk_A_I, pk_A_E) in
+	let sessionKey_BA = get_session_key_between_AB(sharedKey_BA, INFOS) in	
+	let aesString = get_aes_key_between_AB(SALT, sessionKey_BA, INFO, 80) in
+	let aesKey = fist256bit(aesString) in
+	let hmacKey: key = next256bit(aesString) in
+	let aesIV = last128bit(aesString) in
+	
+	(* Clone Attack之前的消息 *)
+	in(ch_s2c, cipher_text_A: bitstring);
+	let plain_text_A = sdeccbc(cipher_text_A, aesKey, aesIV) in
+	let cipher_text_B = senccbc(plain_text_B, aesKey, aesIV) in
+	out(ch_c2s, cipher_text_B);
+	
+	(* Clone Attack之后的消息 *)
+	in(ch_s2c, cipher_text_A: bitstring);
+	let plain_text_A = sdeccbc(cipher_text_A, aesKey, aesIV) in
+	let cipher_text_B = senccbc(plain_text_B, aesKey, aesIV) in
+	out(ch_c2s, cipher_text_B);
+	
+	(* 与A-cloner建立session *)
+	(* Key exchange and decrypt msg *)
+	in(ch_s2c, (pk_A_I_clone: pkey, pk_A_E_clone: pkey));
+	out(ch_c2s, (pk_B_I, pk_B_E));
+	let sharedKey_BA_clone = get_ecdh3_between_AB(skey_B_I, skey_B_E, pk_A_I_clone, pk_A_E_clone) in
+	let sessionKey_BA_clone_new = get_session_key_between_AB(sharedKey_BA_clone, INFOS) in
+	event evClientBobBuildSessionWithCloner(sharedKey_BA_clone);
+	let aesString_clone_new = get_aes_key_between_AB(SALT, sessionKey_BA_clone_new, INFO, 80) in
+	let aesKey_clone_new = fist256bit(aesString_clone_new) in
+	let hmacKey_clone_new: key = next256bit(aesString_clone_new) in
+	let aesIV_clone_new = last128bit(aesString_clone_new) in
+	
+	(* 接收Cloner发送的消息 *)
+	in(ch_s2c, cipher_text_A_clone: bitstring);
+	event evClientBobReceiveClonerMessage(cipher_text_A_clone);
+	let plain_text_A_clone = sdeccbc(cipher_text_A_clone, aesKey_clone_new, aesIV_clone_new) in
+	
+	0
+).
+
+(* authenticity properties *)
+query userID:bitstring, deviceID:bitstring, access_token:token, skey_I:skey, skey_E:skey, sessionKey:tp_sessionKey, plain_text:bitstring;
+event(evClonerCanDecryptFormerMessage(plain_text)) ==> 
+( event(evClonerGetRoomForwardedKey(sessionKey)) ==> event(evCloneTable(userID, deviceID, access_token, skey_I, skey_E)) ). 
+
+query userID:bitstring, deviceID:bitstring, access_token:token, skey_I:skey, skey_E:skey, cipher_text:bitstring;
+event(evClonerCanDecryptFormerMessage(cipher_text)) ==> event(evCloneTable(userID, deviceID, access_token, skey_I, skey_E)).
+query userID:bitstring, deviceID:bitstring, access_token:token, skey_I:skey, skey_E:skey, cipher_text:bitstring;
+event(evClonerCanDecryptBobMessage(cipher_text)) ==> event(evCloneTable(userID, deviceID, access_token, skey_I, skey_E)).
+
+query userID:bitstring, deviceID:bitstring, access_token:token, skey_I:skey, skey_E:skey, sharedKey:tp_sharedKey;
+event(evClientBobBuildSessionWithCloner(sharedKey)) ==> event(evCloneTable(userID, deviceID, access_token, skey_I, skey_E)).
+query userID:bitstring, deviceID:bitstring, access_token:token, skey_I:skey, skey_E:skey, session_key:tp_sessionKey;
+event(evClonerCanBuildSessionWithBob(session_key)) ==> event(evCloneTable(userID, deviceID, access_token, skey_I, skey_E)).
+
+query cipher_text_A_clone:bitstring; event(evClientBobReceiveClonerMessage(cipher_text_A_clone)) ==> event(evClonerCanEncryptMessage(cipher_text_A_clone)).
+query cipher_text_A_clone:bitstring; event(evClientBobReceiveClonerMessage(cipher_text_A_clone)) ==> event(evClonerSendMessage(cipher_text_A_clone)).
+
+
+process
+	
+(
+	!clientA() | !serverA() | !serverB() | !clientB() | !clientA_cloner()
+)

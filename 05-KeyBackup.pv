@@ -1,0 +1,136 @@
+(*
+	Key backup protocol.
+*)
+free ch_c2s: channel.
+free ch_s2c: channel.
+free ch_s2s: channel.
+
+free userID_A: bitstring.
+free deviceID_A: bitstring.
+free deviceID_AA: bitstring.
+
+type skey.
+type pkey.
+type access_token.
+fun pk(skey): pkey.
+fun auth(skey): access_token.
+type object.
+type sessionkey.
+type encsessiondata.
+type action.
+type urlrequesttype.
+type signature.
+type number.
+type verification.
+
+const BackupAlgorithm: bitstring.  (* m.megolm_backup.v1.curve25519-aes-sha2 *)
+const POST: urlrequesttype.
+const PUT: urlrequesttype. 
+const GET: urlrequesttype. 
+const RoomKeysVersion: action.
+const RoomKeysKeys: action.
+const Version: bitstring.
+
+free yes_verified: verification.
+free no_verified: verification.
+
+free roomSessionKey: sessionkey [private].
+free key_backup_data: object [private].
+
+fun establish_room_session(skey, skey, pkey, pkey, bitstring): sessionkey.
+fun get_signature(bitstring, bitstring, skey, pkey): signature.
+fun encrypt_session_keys(skey, sessionkey): object.
+fun get_authdata(pkey, signature): object.
+fun get_count(object): number.
+fun gen_key_backup_data(number, number, verification, object): object.
+fun decrypt_session_keys(skey, object): sessionkey.
+fun unpack_key_backup_data_last_part(object): object.
+
+event evDevice2GetRoomKeysVersion(action, access_token).
+event evServerAliceReceiveRoomKeysVersion(action, access_token).
+
+
+let aliceDevice1(sk_A_I:skey, pk_B_I:pkey, pk_B_E:pkey) = (
+	new sk_A_E: skey;
+	new roomID: bitstring;
+	
+	let pk_A_I = pk(sk_A_I) in 
+	let pk_A_E = pk(sk_A_E) in
+	
+	(* POST /_matrix/client/v3/room_keys/version *)
+	let actionRoomKeysVersion = RoomKeysVersion in
+	let auth_data = get_authdata(pk_A_E, get_signature(userID_A, deviceID_A, sk_A_E, pk_A_E)) in
+	out(ch_c2s, (POST, actionRoomKeysVersion, BackupAlgorithm, auth_data));
+	in(ch_s2c, version:bitstring);
+	
+	(* PUT /_matrix/client/v3/room_keys/keys *)
+	let roomSessionKey = establish_room_session(sk_A_I, sk_A_E, pk_B_I, pk_B_E, roomID) in
+	new first_message_index: number;
+	new forwarded_count: number;
+	let is_verified = yes_verified in 
+	let session_data = encrypt_session_keys(sk_A_I, roomSessionKey) in
+	let key_backup_data = gen_key_backup_data(first_message_index, forwarded_count, is_verified, session_data) in
+	new sessionID: bitstring;
+	let actionRoomKeysKeys = RoomKeysKeys in
+	out(ch_c2s, (PUT, (actionRoomKeysKeys, version), sessionID, key_backup_data));
+	in(ch_s2c, (count:number, etag:bitstring));
+	0
+).
+
+let serverA() = (
+
+	in(ch_c2s, (POST: urlrequesttype, actionRoomKeysVersion: action, BackupAlgorithm: bitstring, auth_data: object));
+	let count = get_count(auth_data) in
+	let version = Version in
+	out(ch_s2c, version);
+	
+	in(ch_c2s, (PUT:urlrequesttype, (actionRoomKeysKeys:action, version:bitstring), sessionID:bitstring, key_backup_data:object));
+	new etag: bitstring;
+	out(ch_s2c, (count, etag));
+	
+	in(ch_c2s, (GET:urlrequesttype, actionRoomKeysVersion:action, authentication:access_token));
+	event evServerAliceReceiveRoomKeysVersion(actionRoomKeysVersion, authentication);
+	out(ch_s2c, (BackupAlgorithm, auth_data, count, etag, version));
+	
+	in(ch_c2s, (GET:urlrequesttype, (actionRoomKeysKeys:action, version:bitstring)));
+	out(ch_s2c, (sessionID, key_backup_data));
+	0
+
+).
+
+let aliceDevice2(sk_A_I:skey) = (
+	(* GET /_matrix/client/v3/room_keys/version *)
+	let actionRoomKeysVersion = RoomKeysVersion in
+	let authentication = auth(sk_A_I) in
+	event evDevice2GetRoomKeysVersion(actionRoomKeysVersion, authentication);
+	out(ch_c2s, (GET, actionRoomKeysVersion, authentication));
+	in(ch_s2c, (BackupAlgorithm:bitstring, auth_data:object, count:number, etag:bitstring, version:bitstring));
+	
+	let actionRoomKeysKeys = RoomKeysKeys in
+	out(ch_c2s, (GET, (actionRoomKeysKeys, version)));
+	in(ch_s2c, (sessionID:bitstring, key_backup_data:object));
+	
+	let session_data = unpack_key_backup_data_last_part(key_backup_data) in 
+	let roomSessionKey = decrypt_session_keys(sk_A_I, session_data) in
+	0
+).
+
+(* authenticity properties *)
+query actionRoomKeysVersion: action, authentication: access_token; 
+event(evServerAliceReceiveRoomKeysVersion(actionRoomKeysVersion, authentication)) ==> 
+event(evDevice2GetRoomKeysVersion(actionRoomKeysVersion, authentication)).
+
+(* Confidentiality properties *)
+query attacker(roomSessionKey).
+query attacker(key_backup_data).
+
+process
+(
+	new sk_A_I: skey;
+	new sk_B_I: skey;
+	new sk_B_E: skey;
+	let pk_B_I = pk(sk_B_I) in 
+	let pk_B_E = pk(sk_B_E) in
+	
+	!aliceDevice1(sk_A_I, pk_B_I, pk_B_E) | !serverA() | !aliceDevice2(sk_A_I)
+)

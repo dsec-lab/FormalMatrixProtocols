@@ -1,0 +1,118 @@
+(*
+Publick-Key Cryptography based KeyDistribution:
+Key Generate, Key Upload, Key Claim, Key Query, One-time keys and fallback key
+*)
+free ch_c2s: channel.
+free ch_s2c: channel.
+free ch_s2s: channel.
+
+free userID_A: bitstring.
+free userID_B: bitstring.
+
+type skey.
+type pkey.
+fun pk(skey): pkey.
+
+type action.
+
+const Upload: action.
+const Claim: action.
+const Query: action.
+
+event evUploadAliceKey(pkey).
+event evUploadBobKey(pkey).
+event evClaimAliceKey(pkey).
+event evClaimBobKey(pkey).
+event evQueryAliceKey(bitstring).
+event evQueryBobKey(bitstring).
+event evRecieveAliceKeys(bitstring, pkey, pkey).
+event evRecieveBobKeys(bitstring, pkey, pkey).
+
+
+let clientA(sk_A_I: skey) = (
+	new sk_A_E: skey;
+	let pk_A_I = pk(sk_A_I) in 
+	let pk_A_E = pk(sk_A_E) in
+	
+	let actionUpload = Upload in
+	event evUploadAliceKey(pk_A_I);
+	out(ch_c2s, (actionUpload, pk_A_I));
+	let actionClaim = Claim in
+	event evClaimAliceKey(pk_A_E);
+	out(ch_c2s, (actionClaim, pk_A_E));
+	
+	let actionQuery = Query in
+	event evQueryBobKey(userID_B);
+	out(ch_c2s, (userID_B, actionQuery));
+	in(ch_s2c, (userID_B:bitstring, pk_B_I: pkey, pk_B_E: pkey));
+	event evRecieveBobKeys(userID_B, pk_B_I, pk_B_E);
+	0
+).
+
+let serverA() = (
+	in(ch_c2s, (actionUpload: action, pk_A_I: pkey));
+	in(ch_c2s, (actionClaim: action, pk_A_E: pkey));
+	
+	in(ch_c2s, (user: bitstring, actionQuery: action));
+	if actionQuery = Query && user = userID_B then out(ch_s2s, (userID_B, actionQuery));
+	in(ch_s2s, (userID_B:bitstring, pk_B_I: pkey, pk_B_E: pkey));
+	out(ch_s2c, (userID_B, pk_B_I, pk_B_E));
+	
+	in(ch_s2s, (user: bitstring, actionQuery: action));
+	if actionQuery = Query && user = userID_A then out(ch_s2s, (userID_A, pk_A_I, pk_A_E));
+	0
+
+).
+
+let serverB() = (
+	in(ch_c2s, (actionUpload: action, pk_B_I: pkey));
+	in(ch_c2s, (actionClaim: action, pk_B_E: pkey));
+	
+	in(ch_c2s, (user: bitstring, actionQuery: action));
+	if actionQuery = Query && user = userID_A then out(ch_s2s, (userID_A, actionQuery));
+	in(ch_s2s, (userID_A:bitstring, pk_A_I: pkey, pk_A_E: pkey));
+	out(ch_s2c, (userID_A, pk_A_I, pk_A_E));
+	
+	in(ch_s2s, (user: bitstring, actionQuery: action));
+	if actionQuery = Query && user = userID_B then out(ch_s2s, (userID_B, pk_B_I, pk_B_E));
+	0
+
+).
+
+let clientB(sk_B_I: skey) = (
+	new sk_B_E: skey;
+	let pk_B_I = pk(sk_B_I) in
+	let pk_B_E = pk(sk_B_E) in
+
+	let actionUpload = Upload in
+	event evUploadBobKey(pk_B_I);
+	out(ch_c2s, (actionUpload, pk_B_I));
+	let actionClaim = Claim in
+	event evClaimBobKey(pk_B_E);
+	out(ch_c2s, (actionClaim, pk_B_E));
+	
+	let actionQuery = Query in
+	event evQueryAliceKey(userID_A);
+	out(ch_c2s, (userID_A, actionQuery));
+	in(ch_s2c, (userID_A:bitstring, pk_A_I: pkey, pk_A_E: pkey));
+	event evRecieveAliceKeys(userID_A, pk_A_I, pk_A_E);
+	0
+).
+
+query userID: bitstring, pk_I: pkey, pk_E: pkey; 
+event(evRecieveAliceKeys(userID, pk_I, pk_E)) ==> event(evUploadAliceKey(pk_I)) && event(evClaimAliceKey(pk_E)).
+
+query userID: bitstring, pk_I: pkey, pk_E: pkey; 
+event(evRecieveBobKeys(userID, pk_I, pk_E)) ==> event(evUploadBobKey(pk_I)) && event(evClaimBobKey(pk_E)).
+
+query userID: bitstring, pk_I: pkey, pk_E: pkey; 
+event(evRecieveBobKeys(userID, pk_I, pk_E)) ==> event(evQueryBobKey(userID)).
+query userID: bitstring, pk_I: pkey, pk_E: pkey; 
+event(evRecieveAliceKeys(userID, pk_I, pk_E)) ==> event(evQueryAliceKey(userID)).
+
+process
+(
+	new sk_A_I: skey;
+	new sk_B_I: skey;
+	!clientA(sk_A_I) | !serverA() | !serverB() | !clientB(sk_B_I)
+)

@@ -1,0 +1,104 @@
+(*
+KeyForwarding/KeySharing Attack 与SAS的安全性强相关
+已知SAS协议存在安全漏洞，则key sharing必然也会有漏洞。
+m.room_key_request
+m.forwarded_room_key: olm_export_inbound_group_session, 
+*)
+free ch: channel.
+
+type event_type.
+type verification.
+type sesskey.
+
+free RoomKeyRequest: event_type.
+free RoomForwaredKey: event_type.
+
+(* yes/no verification of sas code comparison *)
+free yes_verification: verification.
+free no_verification: verification.
+
+free deviceID_A: bitstring.
+free deviceID_AA: bitstring.
+free sessionKey: sesskey [private].
+
+const request_cancellation: bitstring.
+
+letfun check_verification(deviceID:bitstring) = (yes_verification, deviceID_A).
+
+event evDeviceASendRequest(bitstring).
+event evDeviceAReceiveKey(sesskey).
+
+event evDeviceAAReceiveRequest(bitstring).
+event evDeviceAASendKey(sesskey).
+
+event evCancel.
+event evDisregard.
+
+
+let deviceA(deviceID_A: bitstring) = 
+(
+	let action = RoomKeyRequest in
+	event evDeviceASendRequest(deviceID_AA);
+	out(ch, (action, deviceID_A, deviceID_AA));
+	
+	in(ch, (action:event_type, from_device:bitstring, to_device:bitstring));
+	in(ch, sessionKey:sesskey);
+	event evDeviceAReceiveKey(sessionKey);
+	if action = RoomForwaredKey && from_device = deviceID_AA && to_device = deviceID_A then
+		let action = RoomKeyRequest in
+		let action_set_to = request_cancellation in
+		out(ch, (action, deviceID_A, deviceID_AA, action_set_to))
+	else
+		event evCancel
+).
+
+let serverA() = 
+(	
+	in(ch, (action:event_type, from_device:bitstring, to_device:bitstring));
+	out(ch, (action, deviceID_A, deviceID_AA));
+	
+	in(ch, (action:event_type, from_device:bitstring, to_device:bitstring));
+	in(ch, sessionKey:sesskey);
+	out(ch, (action, deviceID_AA, deviceID_A));
+	out(ch, sessionKey);
+	
+	in(ch, (action:event_type, from_device:bitstring, to_device:bitstring, action_set_to:bitstring));
+	out(ch, (action, deviceID_A, deviceID_AA, action_set_to))
+).
+
+
+let deviceAA(deviceID_AA:bitstring) = 
+(
+	let self_deviceID = deviceID_AA in
+	in(ch, (action:event_type, from_device:bitstring, to_device:bitstring));
+	event evDeviceAAReceiveRequest(from_device);
+	if action = RoomKeyRequest && to_device = self_deviceID then
+		let (CV:verification, deviceID_A:bitstring) = check_verification(from_device) in 
+		if CV = yes_verification then
+			let action = RoomForwaredKey in
+			out(ch, (action, deviceID_AA, deviceID_A));
+			out(ch, sessionKey);
+			event evDeviceAASendKey(sessionKey);
+			
+			in(ch, (action:event_type, from_device:bitstring, to_device:bitstring, action_set_to:bitstring));
+			if action_set_to = request_cancellation then
+				event evDisregard
+			else
+				event evCancel
+		else
+			event evCancel
+	else
+		event evCancel
+).
+
+
+query deviceFrom:bitstring, deviceTo:bitstring; event(evDeviceAAReceiveRequest(deviceFrom)) ==> event(evDeviceASendRequest(deviceTo)).
+query session_key:sesskey; event(evDeviceAReceiveKey(session_key)) ==> event(evDeviceAASendKey(session_key)).
+
+query attacker(sessionKey).
+
+process
+
+(
+	!deviceA(deviceID_A) | !serverA() | !deviceAA(deviceID_AA)
+)
