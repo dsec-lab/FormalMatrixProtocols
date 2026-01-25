@@ -91,14 +91,16 @@ let deviceAA(deviceID_AA:bitstring) =
 		event evCancel
 ).
 
-
+(* authenticity properties *)
 query deviceFrom:bitstring, deviceTo:bitstring; event(evDeviceAAReceiveRequest(deviceFrom)) ==> event(evDeviceASendRequest(deviceTo)).
 query session_key:sesskey; event(evDeviceAReceiveKey(session_key)) ==> event(evDeviceAASendKey(session_key)).
 
+(* confidentiality properties *)
 query attacker(sessionKey).
 
 process
 
 (
 	!deviceA(deviceID_A) | !serverA() | !deviceAA(deviceID_AA)
+
 )
