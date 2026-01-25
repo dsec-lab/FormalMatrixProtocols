@@ -115,7 +115,7 @@ let aliceDevice2(sk_A_I:skey) = (
 	0
 ).
 
-(* authenticity properties *)
+(* authenticity properties verification *)
 query actionRoomKeysVersion: action, authentication: access_token; 
 event(evServerAliceReceiveRoomKeysVersion(actionRoomKeysVersion, authentication)) ==> 
 event(evDevice2GetRoomKeysVersion(actionRoomKeysVersion, authentication)).
@@ -134,3 +134,4 @@ process
 	
 	!aliceDevice1(sk_A_I, pk_B_I, pk_B_E) | !serverA() | !aliceDevice2(sk_A_I)
 )
+
