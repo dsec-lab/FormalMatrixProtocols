@@ -539,7 +539,7 @@ let clientB(skey_B_E:skey, transactionId: bitstring) =
 		event evCancel
 ).
 
-(* authenticity properties verification between Alice and Bob*)
+(* authenticity properties verification between Alice and Bob *)
 query pkey_E:pkey; event(evClientBobReceiveKeys(pkey_E)) ==> event(evClientAliceSendKeys(pkey_E)).
 query pkey_E:pkey; event(evClientAliceReceiveKeys(pkey_E)) ==> event(evClientBobSendKeys(pkey_E)).
 
@@ -552,6 +552,7 @@ query mac:key; event(evClientAliceReceiveMAC(mac)) ==> event(evClientBobSendMAC(
 query fkey_E:fkey; event(evClientBobReceiveFingerprintKey(fkey_E)) ==> event(evClientAliceSendFingerprintKey(fkey_E)).
 query fkey_E:fkey; event(evClientAliceReceiveFingerprintKey(fkey_E)) ==> event(evClientBobSendFingerprintKey(fkey_E)).
 
+(* authenticity properties verification between Alice and Bob in CalcShareSecret *)
 query pkey_E:pkey, sharekey:key; event(evClientBobCalcShareSecret(sharekey)) ==> event(evClientAliceSendKeys(pkey_E)).
 query pkey_E:pkey, sharekey:key; event(evClientAliceCalcShareSecret(sharekey)) ==> event(evClientBobSendKeys(pkey_E)).
 
@@ -598,4 +599,5 @@ process
 ( 
   !clientA(skey_A_E, transactionId) | !serverA() | !serverB() | !clientB(skey_B_E, transactionId)
 )
+
 
