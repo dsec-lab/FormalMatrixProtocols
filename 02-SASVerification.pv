@@ -539,7 +539,7 @@ let clientB(skey_B_E:skey, transactionId: bitstring) =
 		event evCancel
 ).
 
-(* authenticity properties *)
+(* authenticity properties verification between Alice and Bob*)
 query pkey_E:pkey; event(evClientBobReceiveKeys(pkey_E)) ==> event(evClientAliceSendKeys(pkey_E)).
 query pkey_E:pkey; event(evClientAliceReceiveKeys(pkey_E)) ==> event(evClientBobSendKeys(pkey_E)).
 
@@ -598,3 +598,4 @@ process
 ( 
   !clientA(skey_A_E, transactionId) | !serverA() | !serverB() | !clientB(skey_B_E, transactionId)
 )
+
