@@ -99,12 +99,13 @@ let clientB(sk_B_I: skey) = (
 	0
 ).
 
+(* Authenticity properties verification between Alice/Sender and Bob/Receiver *)
 query userID: bitstring, pk_I: pkey, pk_E: pkey; 
 event(evRecieveAliceKeys(userID, pk_I, pk_E)) ==> event(evUploadAliceKey(pk_I)) && event(evClaimAliceKey(pk_E)).
-
 query userID: bitstring, pk_I: pkey, pk_E: pkey; 
 event(evRecieveBobKeys(userID, pk_I, pk_E)) ==> event(evUploadBobKey(pk_I)) && event(evClaimBobKey(pk_E)).
 
+(* Authenticity properties verification between Alice/Sender and Bob/Receiver *)
 query userID: bitstring, pk_I: pkey, pk_E: pkey; 
 event(evRecieveBobKeys(userID, pk_I, pk_E)) ==> event(evQueryBobKey(userID)).
 query userID: bitstring, pk_I: pkey, pk_E: pkey; 
@@ -116,3 +117,4 @@ process
 	new sk_B_I: skey;
 	!clientA(sk_A_I) | !serverA() | !serverB() | !clientB(sk_B_I)
 )
+
