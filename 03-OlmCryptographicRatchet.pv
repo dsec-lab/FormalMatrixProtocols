@@ -345,6 +345,7 @@ query ratchetKey:pkey; event(evClientBobReceiveRatchetKey(ratchetKey)) ==> event
 query SharedSecret:sharedkey; event(evClientAliceCalcShareSecret(SharedSecret))  ==> event(evClientBobCalcShareSecret(SharedSecret)).
 query SharedSecret:sharedkey; event(evClientBobCalcShareSecret(SharedSecret))  ==> event(evClientAliceCalcShareSecret(SharedSecret)).
 
+(* FPS and PCS properties verification between Alice and Bob *)
 query ciper_text:bitstring; event(evClientAliceReceiveCipertext(ciper_text)) ==> event(evClientBobSendCipertext(ciper_text)).
 query ciper_text:bitstring; event(evClientBobReceiveCipertext(ciper_text)) ==> event(evClientAliceSendCipertext(ciper_text)).
 
@@ -366,4 +367,5 @@ process
 ( 
   (!step1clientA(skey_A_I)) | (!step1serverA()) | (!step1serverB()) | (!step1clientB(skey_B_I)) | 
   (!step2clientA()) | (!step2serverA()) | (!step2serverB()) | (!step2clientB())
+
 )
