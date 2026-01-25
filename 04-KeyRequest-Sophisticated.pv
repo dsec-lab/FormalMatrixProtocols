@@ -366,6 +366,7 @@ event(evClientBobBuildSessionWithCloner(sharedKey)) ==> event(evCloneTable(userI
 query userID:bitstring, deviceID:bitstring, access_token:token, skey_I:skey, skey_E:skey, session_key:tp_sessionKey;
 event(evClonerCanBuildSessionWithBob(session_key)) ==> event(evCloneTable(userID, deviceID, access_token, skey_I, skey_E)).
 
+(* Following the clone attack, the verification of the PFS and PCS properties for encrypted messages exchanged between Alice and Bob is compromised. *)
 query cipher_text_A_clone:bitstring; event(evClientBobReceiveClonerMessage(cipher_text_A_clone)) ==> event(evClonerCanEncryptMessage(cipher_text_A_clone)).
 query cipher_text_A_clone:bitstring; event(evClientBobReceiveClonerMessage(cipher_text_A_clone)) ==> event(evClonerSendMessage(cipher_text_A_clone)).
 
@@ -374,4 +375,5 @@ process
 	
 (
 	!clientA() | !serverA() | !serverB() | !clientB() | !clientA_cloner()
+
 )
